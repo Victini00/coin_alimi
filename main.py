@@ -10,17 +10,25 @@ import pandas as pd # 데이터프레임
 from binance.client import Client
 from binance.enums import *
 
+import telegram_message as tele_talk
+
 # 환경변수
 api_key = os.environ.get('BINANCE_API_KEY')
-api_secret = os.environ.get('BINANCE_API_SECRET')
+api_secret = os.environ.get('BINANCE_SECRET_KEY')
 
 cli = Client(api_key, api_secret)
 
 ############## 수정 ###################
 # 원하는 암호화폐 종류를 입력한다.
-symbol = 'BTC/USDT'
+symbol = "BTC/USDT"
 # 시간 프레임 크기를 정한다. 1m, 1h, 1d,...
-timeframe = '1m'
+timeframe = '4h'
+# RSI limit, 몇 개를 가지고 계산할지
+limit = 200
+# RSI period, 기본값은 14
+period = 14
+RSI_upper_line = 75
+RSI_lower_line = 25
 #######################################
 
 ### 중요 ###
@@ -41,8 +49,9 @@ markets = exchange.load_markets()
 # 현재가 조회 -----------------------------------------------
 
 # 다양한 정보를 json 형태로 묶어 리턴해준다.
-tickers = exchange.fetch_tickers()
-BTC = tickers[symbol]
+# tickers = exchange.fetch_tickers()
+
+BTC = exchange.fetch_ticker(symbol)
 
 # 현재가는 티커의 close를 통해 얻을 수 있다.
 # 시간은 timestamp로 얻을 수 있다. ms 단위.
@@ -53,7 +62,7 @@ now_time = datetime.datetime.fromtimestamp(timestamp)
 
 now_price = BTC['close'] # 달러 기준.
 
-# print(now_price, timestamp, now_time)
+print(now_price, timestamp, now_time)
 
 # 호가 조회 -------------------------------------------------
 
@@ -63,17 +72,24 @@ order_book = exchange.fetch_order_book(symbol = symbol)
 # 시세 캔들 조회 ---------------------------------------------
 
 # ohlcv: open, high, low, close, volume
-ohlcv = exchange.fetch_ohlcv(symbol=symbol, timeframe=timeframe)
+# limit 인자를 주면, 몇 개의 데이터를 가져올지 설정할 수 있다.
+ohlcv = exchange.fetch_ohlcv(symbol=symbol, timeframe=timeframe, limit=limit)
+df = pd.DataFrame(ohlcv)
 
+'''
+df = pd.DataFrame(btc_ohlcv, columns=['datetime', 'open', 'high', 'low', 'close', 'volume'])
+df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
+df.set_index('datetime', inplace=True)
+print(df)
+'''
 
 # 내 잔고 조회 ------------------------------------------------
 # free, total, used 총 3개의 옵션이 있다.
 balance = exchange.fetch_balance()
 my_USDT_balance = balance['USDT']
-# pprint.pprint(my_USDT_balance)
 
-a = my_USDT_balance.get('free')
-print(a)
+# pprint.pprint(my_USDT_balance)
+# print(my_USDT_balance.get('free'))
 
 
 
@@ -146,15 +162,96 @@ print(a)
 
 
 # 보조 지표 ----------------------------------------------------
-# 1. RSI
-def
+# 1. RSI / divergence
+
+# 기본 설정으로, 14일에 대해 구하기 때문에, period를 14로 설정
+def RSI_calculator(df: pd.DataFrame, period: int = period):
+    ohlcv_close = df[4].astype(float) 
+    # ohlcv의 data는 앞에서부터 'datetime', 'open', 'high', 'low', 'close', 'volume'
+    # 따라서 close, 종가를 가져와 float으로 변환하게 된다.
+    diff = ohlcv_close.diff() # pandas의 행끼리의 차이를 기록하는 함수.
+    gain, decline = diff.copy(), diff.copy() # 상승하락을 따로 계산하기 위해 복사.
+    gain[gain < 0] = 0
+    decline[decline > 0] = 0
+
+    _gain = gain.ewm(com=(period - 1), min_periods=period).mean()
+    _loss = decline.abs().ewm(com=(period - 1), min_periods=period).mean()
+
+    RS = _gain / _loss
+    return pd.Series(100 - (100 / (1 + RS)), name = "RSI")
 
 
+def now_RSI(timeframe = timeframe, symbol = symbol):
+    return RSI_calculator(df, period).iloc[-1]
 
+def RSI_list(timeframe = timeframe, symbol = symbol):
+    return RSI_calculator(df, period)
+
+# 특정 타임프레임에서의 rsi값 구하기
+# print(now_RSI(timeframe='15m'))
+
+# 하락 다이버전스
+# RSI_list(timeframe, symbol)[17] ,print(ohlcv)
+# 실질적으로 계산하는 캔들 수는, {limit - period}개이다.
+
+def find_short_divergence(symbol = symbol, timeframe = timeframe, limit = limit, period = period):
+    # initialize
+    divergence_list = []
+    divergence_count = 0
+
+    temp_datetime = datetime.datetime.fromtimestamp(ohlcv[period][0]/1000) # time
+
+    max_price = ohlcv[period][2] # high price
+    # min_price = ohlcv[period][3] # low price
+
+    rsi = RSI_list(timeframe, symbol)[period]
+
+    for i in range(period+1, limit-1):
+        this_max_price = ohlcv[i][2]
+        this_rsi = RSI_list(timeframe, symbol)[i]
+        this_time = datetime.datetime.fromtimestamp(ohlcv[i][0]/1000)
+
+        # 현재 rsi가 지역 최적해임과 동시에, 과매수 구간인 경우
+        if this_rsi >= RSI_list(timeframe, symbol)[i-1] and this_rsi >= RSI_list(timeframe, symbol)[i+1] and this_rsi >= RSI_upper_line:
+            if rsi < RSI_upper_line:
+                rsi = RSI_list(timeframe, symbol)[i]
+                max_price = this_max_price
+                temp_datetime = this_time
+            # 이하의 경우는 rsi와 this_rsi가 전부 RSI_upper_line 이상.
+            elif this_max_price > max_price and this_rsi < rsi: # regular divergence
+                divergence_count += 1
+                divergence_list.append([temp_datetime, this_time, "일반 하락 다이버전스"])
+
+                rsi = RSI_list(timeframe, symbol)[i]
+                max_price = this_max_price
+                temp_datetime = this_time
+            elif this_max_price < max_price and this_rsi > rsi: # hidden divergence
+                divergence_count += 1
+                divergence_list.append([temp_datetime, this_time, "히든 하락 다이버전스"])
+
+                rsi = RSI_list(timeframe, symbol)[i]
+                max_price = this_max_price
+                temp_datetime = this_time
+    
+    return divergence_list
+
+# print(find_short_divergence(symbol, timeframe, limit, period))
 
 ##################################################################
 # 프로 웹소켓 모듈
 # 다양한 모듈이 있음. exchange.has['...'] 명령어로 지원여부를 확인할 수 있다.
+
+
+
+##################################################################
+# 메세지 보내기 모듈
+
+# 1. 하락 다이버전스 알림
+div_list = find_short_divergence(symbol, timeframe, limit, period)
+mess = ("[다이버전스 알림] "+  str(timeframe) + " timeframe 기준으로 최근 " + str(limit) + "캔들 중 " + 
+        str(len(div_list)) + "번의 하락 다이버전스가 발생하였습니다. 가장 최신 하락 다이버전스는 " + 
+        str(div_list[-1][0]) + "과 " + str(div_list[-1][1]) + "사이의 " + div_list[-1][2] + "입니다.")
+tele_talk.send_message(mess)
 
 
 
