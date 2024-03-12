@@ -237,6 +237,10 @@ def find_short_divergence(symbol = symbol, timeframe = timeframe, limit = limit,
 
 # print(find_short_divergence(symbol, timeframe, limit, period))
 
+# 2. 볼린저 밴드
+
+
+
 ##################################################################
 # 프로 웹소켓 모듈
 # 다양한 모듈이 있음. exchange.has['...'] 명령어로 지원여부를 확인할 수 있다.
@@ -248,10 +252,14 @@ def find_short_divergence(symbol = symbol, timeframe = timeframe, limit = limit,
 
 # 1. 하락 다이버전스 알림
 div_list = find_short_divergence(symbol, timeframe, limit, period)
+
 mess = ("[다이버전스 알림] "+  str(timeframe) + " timeframe 기준으로 최근 " + str(limit) + "캔들 중 " + 
         str(len(div_list)) + "번의 하락 다이버전스가 발생하였습니다. 가장 최신 하락 다이버전스는 " + 
         str(div_list[-1][0]) + "과 " + str(div_list[-1][1]) + "사이의 " + div_list[-1][2] + "입니다.")
-tele_talk.send_message(mess)
+
+# tele_talk.send_message(mess)
+
+print(ohlcv)
 
 
 
